@@ -149,10 +149,11 @@ void rtl_433_Callback(char* message) {
         const char* id = jsonDocument["id"];
         int pressure = jsonDocument["pressure_PSI"];
         int temperature = jsonDocument["temperature_F"];
+        int rssi = jsonDocument["rssi"];
 
         char buffer[50];
         memset(buffer, 0, sizeof(buffer));
-        sprintf(buffer, "%s|%d|%d", id, pressure, temperature);
+        sprintf(buffer, "%s|%d|%d|%d", id, pressure, temperature, rssi);
         pCharacteristic->setValue(buffer);
         pCharacteristic->notify();
       }
