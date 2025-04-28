@@ -133,6 +133,23 @@ int count = 0;
 const char* bleServiceUUID = "E5E84350-FFD5-4B15-BA12-024B7E65ED06";
 const char* bleCharacteristicUUID = "E5E84351-FFD5-4B15-BA12-024B7E65ED06";
 
+void logJson(JsonDocument jsondata) {
+#if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
+  char JSONmessageBuffer[measureJson(jsondata) + 1];
+  serializeJson(jsondata, JSONmessageBuffer, measureJson(jsondata) + 1);
+#else
+  char JSONmessageBuffer[JSON_MSG_BUFFER];
+  serializeJson(jsondata, JSONmessageBuffer, JSON_MSG_BUFFER);
+#endif
+#if defined(setBitrate) || defined(setFreqDev) || defined(setRxBW)
+  Log.setShowLevel(false);
+  Log.notice(F("."));
+  Log.setShowLevel(true);
+#else
+  Log.notice(F("Received message : %s" CR), JSONmessageBuffer);
+#endif
+}
+
 // {"model":"Schrader-EG53MA4","type":"TPMS","flags":"4c900080","id":"06C463","pressure_PSI":0,"temperature_F":81.0,"mic":"CHECKSUM","protocol":"Schrader TPMS EG53MA4, PA66GF35","rssi":-63,"duration":2511996}
 
 void rtl_433_Callback(char* message) {
@@ -161,23 +178,6 @@ void rtl_433_Callback(char* message) {
   }
 }
 
-void logJson(JsonDocument jsondata) {
-#if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
-  char JSONmessageBuffer[measureJson(jsondata) + 1];
-  serializeJson(jsondata, JSONmessageBuffer, measureJson(jsondata) + 1);
-#else
-  char JSONmessageBuffer[JSON_MSG_BUFFER];
-  serializeJson(jsondata, JSONmessageBuffer, JSON_MSG_BUFFER);
-#endif
-#if defined(setBitrate) || defined(setFreqDev) || defined(setRxBW)
-  Log.setShowLevel(false);
-  Log.notice(F("."));
-  Log.setShowLevel(true);
-#else
-  Log.notice(F("Received message : %s" CR), JSONmessageBuffer);
-#endif
-}
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -203,7 +203,7 @@ void setup() {
   pAdvertising->start();
 
 #ifndef LOG_LEVEL
-  #define LOG_LEVEL LOG_LEVEL_SILENT
+#  define LOG_LEVEL LOG_LEVEL_SILENT
 #endif
   Log.begin(LOG_LEVEL, &Serial);
   Log.notice(F(" " CR));

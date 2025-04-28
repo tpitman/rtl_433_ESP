@@ -414,7 +414,7 @@ void rtlSetup() {
 #endif
 
       char* arg = NULL;
-      char verbose[4] = "vvv";
+      char verbose[4] = "vv";
 #ifndef RTL_VERBOSE
 #  define RTL_VERBOSE -1
 #endif
