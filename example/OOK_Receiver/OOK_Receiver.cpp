@@ -146,7 +146,13 @@ void logJson(JsonDocument jsondata) {
   Log.notice(F("."));
   Log.setShowLevel(true);
 #else
-  Log.notice(F("Received message : %s" CR), JSONmessageBuffer);
+  uint32_t seconds = ((float)millis()) / 1000.0f;
+  uint32_t hours = ((float)seconds) / 3600.0f;
+  seconds = seconds % 3600;
+  uint32_t minutes = ((float)seconds) / 60.0f;
+  seconds = seconds % 60;
+
+  printf("Received message : %02d:%02d:%02d - %s\n", hours, minutes, seconds, JSONmessageBuffer);
 #endif
 }
 
@@ -179,7 +185,7 @@ void rtl_433_Callback(char* message) {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(921600);
   delay(1000);
 
   char bleNameWithIPAddress[50];
@@ -269,7 +275,7 @@ void loop() {
 #if defined(setBitrate) || defined(setFreqDev) || defined(setRxBW)
   char stepPrint[8];
   if (uptime() > next) {
-    next = uptime() + 120; // 60 seconds
+    next = uptime() + 30; // 15 seconds
     dtostrf(step, 7, 2, stepPrint);
     Log.notice(F(CR "Finished %s: %s, count: %d" CR), TEST, stepPrint, count);
     step += STEP;

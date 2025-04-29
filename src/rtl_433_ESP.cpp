@@ -208,12 +208,13 @@ void rtl_433_ESP::initReceiver(byte inputPin, float receiveFrequency) {
     state = radio.SPIsetRegValue(RADIOLIB_CC1101_REG_AGCCTRL2, 0xc7);
     RADIOLIB_STATE(state, "set AGCCTRL2");
 
-    state = radio.SPIsetRegValue(RADIOLIB_CC1101_REG_MDMCFG3, 0x93); // Data rate
+    state = radio.SPIsetRegValue(RADIOLIB_CC1101_REG_MDMCFG4, 0x87);//07); // Bandwidth
+    RADIOLIB_STATE(state, "set MDMCFG4");
+
+    state = radio.SPIsetRegValue(RADIOLIB_CC1101_REG_MDMCFG3, 0x93);//93); // Data rate
     RADIOLIB_STATE(state, "set MDMCFG3");
 
-    state = radio.SPIsetRegValue(RADIOLIB_CC1101_REG_MDMCFG4, 0x07); // Bandwidth
-    RADIOLIB_STATE(state, "set MDMCFG4");
-  } else {
+} else {
     // From https://github.com/matthias-bs/BresserWeatherSensorReceiver/issues/41#issuecomment-1458166772
     // radio.begin(868.3, 17.24, 40, 270, 10, 32);
     // carrier frequency:                   868.3 MHz
