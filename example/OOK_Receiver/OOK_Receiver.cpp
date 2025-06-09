@@ -6,17 +6,35 @@
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
 #include <NimBLEDevice.h>
+#include <FastLED.h>
 #include <rtl_433_ESP.h>
+#include <esp_sleep.h>
+#include "lis3dh.h"
 
 #ifndef RF_MODULE_FREQUENCY
 #  define RF_MODULE_FREQUENCY 433.92
 #endif
 
 #define JSON_MSG_BUFFER 512
+#define LIS3DH_INT_PIN GPIO_NUM_26         // ESP32 GPIO pin connected to LIS3DH INT1
+#define SLEEP_DURATION_MINUTES 5
+#define SLEEP_DURATION_US (SLEEP_DURATION_MINUTES * 60 * 1000000ULL)
+#define GO_TO_SLEEP_MS 30000
+
+#define LED_PIN     D8
+#define NUM_LEDS    1
+#define BRIGHTNESS  64 // Max 255
+#define LED_TYPE    WS2812B
+#define COLOR_ORDER GRB
+
+CRGB leds[NUM_LEDS];
+
+uint32_t _milliVolts = 0;
 
 char messageBuffer[JSON_MSG_BUFFER];
 
 static NimBLEServer* pBLEServer;
+static LIS3DH lis3dh;
 
 /**  None of these are required as they will be handled by the library with defaults. **
  **                       Remove as you see fit for your needs                        */
@@ -132,6 +150,7 @@ int count = 0;
 
 const char* bleServiceUUID = "E5E84350-FFD5-4B15-BA12-024B7E65ED06";
 const char* bleCharacteristicUUID = "E5E84351-FFD5-4B15-BA12-024B7E65ED06";
+const char* bleBatteryCharacteristicUUID = "E5E84352-FFD5-4B15-BA12-024B7E65ED06";
 
 void logJson(JsonDocument jsondata) {
 #if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
@@ -154,6 +173,47 @@ void logJson(JsonDocument jsondata) {
 
   printf("Received message : %02d:%02d:%02d - %s\n", hours, minutes, seconds, JSONmessageBuffer);
 #endif
+}
+
+// Function to enter deep sleep
+void goToDeepSleep() {
+  Serial.println("Preparing to enter deep sleep.");
+
+  Serial.println("Turning off the led");
+  FastLED.setBrightness(0);
+  FastLED.show();
+
+  // Configure LIS3DH interrupt pin (GPIO26) as EXT0 wakeup source.
+  // LIS3DH click interrupt is active HIGH by default. Wake up when GPIO26 goes HIGH.
+  Serial.println("Enabling EXT0 wakeup on GPIO " + String(LIS3DH_INT_PIN) + " (Active HIGH)");
+  esp_sleep_enable_ext0_wakeup(LIS3DH_INT_PIN, 1); 
+
+  // Configure timer wakeup
+  Serial.println("Enabling timer wakeup in " + String(SLEEP_DURATION_MINUTES) + " minutes.");
+  esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
+
+  Serial.flush(); // Ensure all serial messages are sent
+  esp_deep_sleep_start(); // Enter deep sleep
+}
+
+// Function to print the cause of wakeup
+void print_wakeup_reason(){
+  esp_sleep_wakeup_cause_t wakeup_reason;
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT0 : 
+      Serial.println("Wakeup caused by external signal on RTC_IO (LIS3DH Interrupt).");
+      lis3dh.ClearInterruptSource(); // IMPORTANT: Clear the interrupt source on LIS3DH
+      break;
+    case ESP_SLEEP_WAKEUP_TIMER : 
+      Serial.println("Wakeup caused by timer."); 
+      break;
+    // Add other cases as needed (EXT1, TOUCHPAD, ULP, etc.)
+    default : 
+      Serial.printf("Wakeup was not by EXT0 or Timer (reason: %d)\n", wakeup_reason); 
+      break;
+  }
 }
 
 // {"model":"Schrader-EG53MA4","type":"TPMS","flags":"4c900080","id":"06C463","pressure_PSI":0,"temperature_F":81.0,"mic":"CHECKSUM","protocol":"Schrader TPMS EG53MA4, PA66GF35","rssi":-63,"duration":2511996}
@@ -186,7 +246,20 @@ void rtl_433_Callback(char* message) {
 
 void setup() {
   Serial.begin(921600);
+
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  FastLED.setBrightness(BRIGHTNESS);
+  leds[0] = CRGB::Green;
+  FastLED.show();
+
   delay(1000);
+
+  print_wakeup_reason();
+
+  if (!lis3dh.Init(LIS3DH_INT_PIN)) {
+  }
+
+  lis3dh.ClearInterruptSource();
 
   char bleNameWithIPAddress[50];
   sprintf(bleNameWithIPAddress, "HLLYTPMS123456789");
@@ -199,6 +272,8 @@ void setup() {
   NimBLEService* pService = pBLEServer->createService(bleServiceUUID);
   NimBLECharacteristic* pCharacteristic = pService->createCharacteristic(bleCharacteristicUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
   pCharacteristic->setCallbacks(&chrCallbacks);
+  NimBLECharacteristic* pBatteryCharacteristic = pService->createCharacteristic(bleBatteryCharacteristicUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pBatteryCharacteristic->setCallbacks(&chrCallbacks);
   pService->start();
 
   /** Create an advertising instance and add the services to the advertised data */
@@ -219,6 +294,8 @@ void setup() {
   rf.enableReceiver();
   Log.notice(F("****** setup complete ******" CR));
   rf.getModuleStatus();
+
+  pinMode(A2, INPUT);
 }
 
 unsigned long uptime() {
@@ -269,8 +346,50 @@ int next = uptime() + 30;
 float step = stepMin;
 #endif
 
+uint32_t battery_timeout = 0;
+
+uint16_t readMilliVolts(uint8_t pin) {
+  const float VCC_Volt = 4.900; // ( 5v for 8bits Arduino boards, 3.3v for ESP, STM32 and SAMD )
+  const float analogReadRange = 4095; // for Arduino boards
+
+  uint16_t analogValue = analogRead(pin);
+  uint16_t milliVolts = (VCC_Volt * 1000 * analogValue) / analogReadRange;
+  return milliVolts;
+}
+
 void loop() {
+  
   rf.loop();
+
+  if (battery_timeout++ % 10000 == 0) {
+    _milliVolts = readMilliVolts(A2);
+
+    Serial.print(_milliVolts);
+    Serial.println(" mV");
+
+    if (pBLEServer->getConnectedCount()) {
+      NimBLEService* pService = pBLEServer->getServiceByUUID(bleServiceUUID);
+      if (pService) {
+        NimBLECharacteristic* pCharacteristic = pService->getCharacteristic(bleBatteryCharacteristicUUID);
+        if (pCharacteristic) {
+          pCharacteristic->setValue(_milliVolts);
+          pCharacteristic->notify();
+        }
+      }
+    }
+  }
+
+  static unsigned long lastActivityTimestamp = millis();
+  unsigned long idleDurationBeforeSleep = GO_TO_SLEEP_MS; // idle + no BLE
+
+  if (pBLEServer && pBLEServer->getConnectedCount() > 0) {
+    lastActivityTimestamp = millis(); // Reset idle timer if BLE is connected
+  } else {
+    if (millis() - lastActivityTimestamp > idleDurationBeforeSleep) {
+      Log.notice(F("Idle time reached with no BLE connection. Entering deep sleep." CR));
+      goToDeepSleep();
+    }
+  }
 
 #if defined(setBitrate) || defined(setFreqDev) || defined(setRxBW)
   char stepPrint[8];
