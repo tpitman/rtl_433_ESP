@@ -70,4 +70,20 @@ uint8_t LIS3DH::Process(uint8_t waitTime) {
   return click_source;
 }
 
+bool LIS3DH::ReadAcceleration(AccelData& data) {
+  // Read normalized acceleration values (-1.0 to +1.0 g)
+  _lis.read();
+  data.x = _lis.x_g;
+  data.y = _lis.y_g;
+  data.z = _lis.z_g;
+  
+  return true;
+}
+
+sensors_event_t LIS3DH::GetEvent() {
+  sensors_event_t event;
+  _lis.getEvent(&event);
+  return event;
+}
+
 #endif // LIS_ENABLED

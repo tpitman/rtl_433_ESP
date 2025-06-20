@@ -5,27 +5,33 @@
 
 #include <ArduinoJson.h>
 #include <ArduinoLog.h>
-#include <NimBLEDevice.h>
 #include <FastLED.h>
-#include <rtl_433_ESP.h>
+#include <NimBLEDevice.h>
 #include <esp_sleep.h>
+#include <rtl_433_ESP.h>
+
 #include "lis3dh.h"
 
 #ifndef RF_MODULE_FREQUENCY
 #  define RF_MODULE_FREQUENCY 433.92
 #endif
 
-#define JSON_MSG_BUFFER 512
-#define LIS3DH_INT_PIN GPIO_NUM_26         // ESP32 GPIO pin connected to LIS3DH INT1
+#define JSON_MSG_BUFFER        512
+#define LIS3DH_INT_PIN         GPIO_NUM_26 // ESP32 GPIO pin connected to LIS3DH INT1
 #define SLEEP_DURATION_MINUTES 5
-#define SLEEP_DURATION_US (SLEEP_DURATION_MINUTES * 60 * 1000000ULL)
-#define GO_TO_SLEEP_MS 10000
+#define SLEEP_DURATION_US      (SLEEP_DURATION_MINUTES * 60 * 1000000ULL)
+#define GO_TO_SLEEP_MS         30000
 
 #define LED_PIN     D8
 #define NUM_LEDS    1
 #define BRIGHTNESS  64 // Max 255
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
+
+const char* bleServiceUUID = "e5e84350-ffd5-4b15-ba12-024b7e65ed06";
+const char* bleCharacteristicUUID = "e5e84351-ffd5-4b15-ba12-024b7e65ed06";
+const char* bleBatteryCharacteristicUUID = "e5e84352-ffd5-4b15-ba12-024b7e65ed06";
+const char* bleAccelerometerCharacteristicUUID = "e5e84353-ffd5-4b15-ba12-024b7e65ed06";
 
 CRGB leds[NUM_LEDS];
 
@@ -35,6 +41,8 @@ char messageBuffer[JSON_MSG_BUFFER];
 
 static NimBLEServer* pBLEServer;
 static LIS3DH lis3dh;
+
+static bool subscribedToAccelerometer = false;
 
 /**  None of these are required as they will be handled by the library with defaults. **
  **                       Remove as you see fit for your needs                        */
@@ -55,6 +63,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
   void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
     Serial.printf("Client disconnected - start advertising\n");
+    subscribedToAccelerometer = false;
     NimBLEDevice::startAdvertising();
   }
 
@@ -113,20 +122,32 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 
   /** Peer subscribed to notifications/indications */
   void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
-    std::string str = "Client ID: ";
-    str += connInfo.getConnHandle();
-    str += " Address: ";
+    std::string uuid = std::string(pCharacteristic->getUUID());
+
+    std::string str = "Address: ";
     str += connInfo.getAddress().toString();
     if (subValue == 0) {
+      if (uuid == bleAccelerometerCharacteristicUUID)
+        subscribedToAccelerometer = false;
+
       str += " Unsubscribed to ";
     } else if (subValue == 1) {
+      if (uuid == bleAccelerometerCharacteristicUUID)
+        subscribedToAccelerometer = true;
+
       str += " Subscribed to notifications for ";
     } else if (subValue == 2) {
+      if (uuid == bleAccelerometerCharacteristicUUID)
+        subscribedToAccelerometer = true;
+
       str += " Subscribed to indications for ";
     } else if (subValue == 3) {
+      if (uuid == bleAccelerometerCharacteristicUUID)
+        subscribedToAccelerometer = true;
+
       str += " Subscribed to notifications and indications for ";
     }
-    str += std::string(pCharacteristic->getUUID());
+    str += uuid;
 
     Serial.printf("%s\n", str.c_str());
   }
@@ -147,10 +168,6 @@ class DescriptorCallbacks : public NimBLEDescriptorCallbacks {
 rtl_433_ESP rf; // use -1 to disable transmitter
 
 int count = 0;
-
-const char* bleServiceUUID = "E5E84350-FFD5-4B15-BA12-024B7E65ED06";
-const char* bleCharacteristicUUID = "E5E84351-FFD5-4B15-BA12-024B7E65ED06";
-const char* bleBatteryCharacteristicUUID = "E5E84352-FFD5-4B15-BA12-024B7E65ED06";
 
 void logJson(JsonDocument jsondata) {
 #if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
@@ -186,7 +203,7 @@ void goToDeepSleep() {
   // Configure LIS3DH interrupt pin (GPIO26) as EXT0 wakeup source.
   // LIS3DH click interrupt is active HIGH by default. Wake up when GPIO26 goes HIGH.
   Serial.println("Enabling EXT0 wakeup on GPIO " + String(LIS3DH_INT_PIN) + " (Active HIGH)");
-  esp_sleep_enable_ext0_wakeup(LIS3DH_INT_PIN, 1); 
+  esp_sleep_enable_ext0_wakeup(LIS3DH_INT_PIN, 1);
 
   // Configure timer wakeup
   Serial.println("Enabling timer wakeup in " + String(SLEEP_DURATION_MINUTES) + " minutes.");
@@ -197,21 +214,21 @@ void goToDeepSleep() {
 }
 
 // Function to print the cause of wakeup
-void print_wakeup_reason(){
+void print_wakeup_reason() {
   esp_sleep_wakeup_cause_t wakeup_reason;
   wakeup_reason = esp_sleep_get_wakeup_cause();
 
-  switch(wakeup_reason) {
-    case ESP_SLEEP_WAKEUP_EXT0 : 
+  switch (wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT0:
       Serial.println("Wakeup caused by external signal on RTC_IO (LIS3DH Interrupt).");
       lis3dh.ClearInterruptSource(); // IMPORTANT: Clear the interrupt source on LIS3DH
       break;
-    case ESP_SLEEP_WAKEUP_TIMER : 
-      Serial.println("Wakeup caused by timer."); 
+    case ESP_SLEEP_WAKEUP_TIMER:
+      Serial.println("Wakeup caused by timer.");
       break;
     // Add other cases as needed (EXT1, TOUCHPAD, ULP, etc.)
-    default : 
-      Serial.printf("Wakeup was not by EXT0 or Timer (reason: %d)\n", wakeup_reason); 
+    default:
+      Serial.printf("Wakeup was not by EXT0 or Timer (reason: %d)\n", wakeup_reason);
       break;
   }
 }
@@ -274,6 +291,8 @@ void setup() {
   pCharacteristic->setCallbacks(&chrCallbacks);
   NimBLECharacteristic* pBatteryCharacteristic = pService->createCharacteristic(bleBatteryCharacteristicUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
   pBatteryCharacteristic->setCallbacks(&chrCallbacks);
+  NimBLECharacteristic* pAccelerometerCharacteristic = pService->createCharacteristic(bleAccelerometerCharacteristicUUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+  pAccelerometerCharacteristic->setCallbacks(&chrCallbacks);
   pService->start();
 
   /** Create an advertising instance and add the services to the advertised data */
@@ -349,20 +368,20 @@ float step = stepMin;
 uint32_t battery_timeout = 0;
 
 uint16_t readMilliVolts(uint8_t pin) {
-  const float VCC_Volt = 4.900; // ( 5v for 8bits Arduino boards, 3.3v for ESP, STM32 and SAMD )
-  const float analogReadRange = 4095; // for Arduino boards
-
-  uint16_t analogValue = analogRead(pin);
-  uint16_t milliVolts = (VCC_Volt * 1000 * analogValue) / analogReadRange;
-  return milliVolts;
+  return analogReadMilliVolts(pin) * 2;
 }
 
 void loop() {
-  
+  static unsigned long lastActivityTimestamp = millis();
+  unsigned long idleDurationBeforeSleep = GO_TO_SLEEP_MS; // idle + no BLE
+
   rf.loop();
 
   if (battery_timeout++ % 10000 == 0) {
     _milliVolts = readMilliVolts(A2);
+
+    if (_milliVolts > 4000)
+      lastActivityTimestamp = millis();
 
     Serial.print(_milliVolts);
     Serial.println(" mV");
@@ -379,11 +398,30 @@ void loop() {
     }
   }
 
-  static unsigned long lastActivityTimestamp = millis();
-  unsigned long idleDurationBeforeSleep = GO_TO_SLEEP_MS; // idle + no BLE
-
   if (pBLEServer && pBLEServer->getConnectedCount() > 0) {
     lastActivityTimestamp = millis(); // Reset idle timer if BLE is connected
+
+    if (subscribedToAccelerometer) {
+      Log.notice(F("getting accelerometer data.\n"));
+
+      AccelData accelData;
+      if (lis3dh.ReadAcceleration(accelData)) {
+        // Create simple string format: x|y|z
+        char accelBuffer[64];
+        memset(accelBuffer, 0, sizeof(accelBuffer));
+        sprintf(accelBuffer, "%.3f|%.3f|%.3f", accelData.x, accelData.y, accelData.z);
+        //Log.notice(F(accelBuffer));
+
+        NimBLEService* pService = pBLEServer->getServiceByUUID(bleServiceUUID);
+        if (pService) {
+          NimBLECharacteristic* pCharacteristic = pService->getCharacteristic(bleAccelerometerCharacteristicUUID);
+          if (pCharacteristic) {
+            pCharacteristic->setValue(accelBuffer);
+            pCharacteristic->notify();
+          }
+        }
+      }
+    }
   } else {
     if (millis() - lastActivityTimestamp > idleDurationBeforeSleep) {
       Log.notice(F("Idle time reached with no BLE connection. Entering deep sleep." CR));

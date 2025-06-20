@@ -369,7 +369,7 @@ void ICACHE_RAM_ATTR rtl_433_ESP::interruptHandler() {
   /* We first do some filtering (same as pilight BPF) */
 
 #ifdef RF_CC1101
-  if (duration > MINIMUM_PULSE_LENGTH && currentRssi > rssiThreshold)
+  if (duration > MINIMUM_PULSE_LENGTH)// && currentRssi > rssiThreshold)
 #else
   if (duration > MINIMUM_PULSE_LENGTH) // SX127X RSSI Value drops for a 0 value,
   // and the OOK floor compensates for this
