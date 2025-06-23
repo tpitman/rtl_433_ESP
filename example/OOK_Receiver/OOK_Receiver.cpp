@@ -117,7 +117,7 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
      *  The value returned in code is the NimBLE host return code.
      */
   void onStatus(NimBLECharacteristic* pCharacteristic, int code) override {
-    Serial.printf("Notification/Indication return code: %d, %s\n", code, NimBLEUtils::returnCodeToString(code));
+    //Serial.printf("Notification/Indication return code: %d, %s\n", code, NimBLEUtils::returnCodeToString(code));
   }
 
   /** Peer subscribed to notifications/indications */
@@ -366,6 +366,7 @@ float step = stepMin;
 #endif
 
 uint32_t battery_timeout = 0;
+uint32_t accelerometer_timeout = 0;
 
 uint16_t readMilliVolts(uint8_t pin) {
   return analogReadMilliVolts(pin) * 2;
@@ -401,9 +402,7 @@ void loop() {
   if (pBLEServer && pBLEServer->getConnectedCount() > 0) {
     lastActivityTimestamp = millis(); // Reset idle timer if BLE is connected
 
-    if (subscribedToAccelerometer) {
-      Log.notice(F("getting accelerometer data.\n"));
-
+    if (subscribedToAccelerometer && accelerometer_timeout++ % 100 == 0) { // 10 times per second is fast enough
       AccelData accelData;
       if (lis3dh.ReadAcceleration(accelData)) {
         // Create simple string format: x|y|z
