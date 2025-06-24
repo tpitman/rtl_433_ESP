@@ -7,8 +7,13 @@
 #include <ArduinoLog.h>
 #include <FastLED.h>
 #include <NimBLEDevice.h>
+#include <Preferences.h>
 #include <esp_sleep.h>
+#include <nvs_flash.h>
+#include <esp_system.h>
 #include <rtl_433_ESP.h>
+
+#include <algorithm>
 
 #include "lis3dh.h"
 
@@ -35,14 +40,61 @@ const char* bleAccelerometerCharacteristicUUID = "e5e84353-ffd5-4b15-ba12-024b7e
 
 CRGB leds[NUM_LEDS];
 
+String sensorLocations[4];
+
 uint32_t _milliVolts = 0;
 
 char messageBuffer[JSON_MSG_BUFFER];
 
 static NimBLEServer* pBLEServer;
 static LIS3DH lis3dh;
+static Preferences preferences;
 
 static bool subscribedToAccelerometer = false;
+
+// Configuration storage functions
+void saveConfiguration() {
+  if (!preferences.begin("tpms-config", false)) {
+    Serial.println("Failed to open preferences for writing");
+    return;
+  }
+  preferences.putString("sensor-1", sensorLocations[0]);
+  preferences.putString("sensor-2", sensorLocations[1]);
+  preferences.putString("sensor-3", sensorLocations[2]);
+  preferences.putString("sensor-4", sensorLocations[3]);
+  preferences.end();
+  Serial.println("Configuration saved:");
+  for (int i = 0; i < 4; i++) {
+    if (sensorLocations[i] != NULL && sensorLocations[i].length() > 0) {
+      Serial.print(i);
+      Serial.println(" - " + sensorLocations[i]);
+    }
+  }
+}
+
+void loadConfiguration() {
+  if (!preferences.begin("tpms-config", true)) {
+    Serial.println("Failed to open preferences for reading - using defaults");
+    // Initialize with default values
+    sensorLocations[0] = "";
+    sensorLocations[1] = "";
+    sensorLocations[2] = "";
+    sensorLocations[3] = "";
+    return;
+  }
+  sensorLocations[0] = preferences.getString("sensor-1", "");
+  sensorLocations[1] = preferences.getString("sensor-2", "");
+  sensorLocations[2] = preferences.getString("sensor-3", "");
+  sensorLocations[3] = preferences.getString("sensor-4", "");
+  preferences.end();
+  Serial.println("Configuration loaded");
+  for (int i = 0; i < 4; i++) {
+    if (sensorLocations[i] != NULL && sensorLocations[i].length() > 0) {
+      Serial.print(i);
+      Serial.println(" - " + sensorLocations[i]);
+    }
+  }
+}
 
 /**  None of these are required as they will be handled by the library with defaults. **
  **                       Remove as you see fit for your needs                        */
@@ -111,6 +163,26 @@ class CharacteristicCallbacks : public NimBLECharacteristicCallbacks {
     Serial.printf("%s : onWrite(), value: %s\n",
                   pCharacteristic->getUUID().toString().c_str(),
                   pCharacteristic->getValue().c_str());
+
+    std::string uuid = std::string(pCharacteristic->getUUID());
+
+    if (uuid == bleCharacteristicUUID) {
+      String value = pCharacteristic->getValue().c_str();
+      int delimterPos = value.indexOf('|');
+      if (delimterPos != -1) {
+        String stringPart = value.substring(0, delimterPos);
+        String intPart = value.substring(delimterPos + 1);
+        int integerValue = intPart.toInt();
+
+        Serial.println("String part: " + stringPart);
+        Serial.println("Integer part: " + String(integerValue));
+
+        if (integerValue >= 0 && integerValue <= 3 && stringPart.length() > 0) {
+          sensorLocations[integerValue] = stringPart;
+          saveConfiguration();
+        }
+      }
+    }
   }
 
   /**
@@ -251,9 +323,18 @@ void rtl_433_Callback(char* message) {
         int temperature = jsonDocument["temperature_F"];
         int rssi = jsonDocument["rssi"];
 
+        int position = -1;
+        for (int i = 0; i < 4; i++) {
+          if (sensorLocations[i] != NULL && sensorLocations[i] == String(id)) {
+            position = i;
+            break;
+          }
+        }
+
         char buffer[50];
         memset(buffer, 0, sizeof(buffer));
-        sprintf(buffer, "%s|%d|%d|%d", id, pressure, temperature, rssi);
+        sprintf(buffer, "%s|%d|%d|%d|%d", id, pressure, temperature, rssi, position);
+        Serial.println(buffer);
         pCharacteristic->setValue(buffer);
         pCharacteristic->notify();
       }
@@ -263,6 +344,19 @@ void rtl_433_Callback(char* message) {
 
 void setup() {
   Serial.begin(921600);
+
+  // Initialize NVS
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    Serial.println("NVS partition was truncated and needs to be erased");
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  if (ret != ESP_OK) {
+    Serial.printf("Failed to initialize NVS: %s\n", esp_err_to_name(ret));
+  } else {
+    Serial.println("NVS initialized successfully");
+  }
 
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
   FastLED.setBrightness(BRIGHTNESS);
@@ -278,10 +372,18 @@ void setup() {
 
   lis3dh.ClearInterruptSource();
 
-  char bleNameWithIPAddress[50];
-  sprintf(bleNameWithIPAddress, "HLLYTPMS123456789");
+  // Get MAC address for unique device naming
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_BT);
+  
+  char bleNameWithMac[50];
+  sprintf(bleNameWithMac, "HLLYTPMS%02X%02X%02X", mac[3], mac[4], mac[5]);
+  
+  Serial.printf("BLE Device Name: %s\n", bleNameWithMac);
+  Serial.printf("BT MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-  NimBLEDevice::init(bleNameWithIPAddress);
+  NimBLEDevice::init(bleNameWithMac);
 
   pBLEServer = NimBLEDevice::createServer();
   pBLEServer->setCallbacks(&serverCallbacks);
@@ -297,7 +399,7 @@ void setup() {
 
   /** Create an advertising instance and add the services to the advertised data */
   NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-  pAdvertising->setName(bleNameWithIPAddress);
+  pAdvertising->setName(bleNameWithMac);
   pAdvertising->addServiceUUID(pService->getUUID());
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
@@ -315,6 +417,8 @@ void setup() {
   rf.getModuleStatus();
 
   pinMode(A2, INPUT);
+
+  loadConfiguration();
 }
 
 unsigned long uptime() {
