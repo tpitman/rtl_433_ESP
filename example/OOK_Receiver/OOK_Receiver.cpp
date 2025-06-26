@@ -319,9 +319,12 @@ void rtl_433_Callback(char* message) {
       NimBLECharacteristic* pCharacteristic = pService->getCharacteristic(bleCharacteristicUUID);
       if (pCharacteristic) {
         const char* id = jsonDocument["id"];
-        int pressure = jsonDocument["pressure_PSI"];
+        float pressure = jsonDocument["pressure_PSI"];
         int temperature = jsonDocument["temperature_F"];
         int rssi = jsonDocument["rssi"];
+        
+        // Round pressure to nearest integer
+        int pressureRounded = round(pressure);
 
         int position = -1;
         for (int i = 0; i < 4; i++) {
@@ -333,7 +336,7 @@ void rtl_433_Callback(char* message) {
 
         char buffer[50];
         memset(buffer, 0, sizeof(buffer));
-        sprintf(buffer, "%s|%d|%d|%d|%d", id, pressure, temperature, rssi, position);
+        sprintf(buffer, "%s|%d|%d|%d|%d", id, pressureRounded, temperature, rssi, position);
         Serial.println(buffer);
         pCharacteristic->setValue(buffer);
         pCharacteristic->notify();
